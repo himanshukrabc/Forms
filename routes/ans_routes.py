@@ -1,7 +1,7 @@
 from flask import Blueprint
 from flask import request, jsonify
 import pymysql
-from assets.db import execute_query
+from assets.db import DatabaseTransaction
 from assets.sheets import insert_answer
 
 ans_bp = Blueprint('answer', __name__)
@@ -13,11 +13,13 @@ def add_ans():
         if 'form_id' not in data.keys():
             return jsonify({"data":"form_id not found"})
         
+        db = DatabaseTransaction()
+        db.start_transaction()
         form_id = data.get("form_id")
         query = f"SELECT spreadsheetId FROM form WHERE form_id = {form_id}"
-        result = execute_query(query)
+        result = db.execute_query(query)
         if len(result[0]) != 1:
-            return {"data": "No such form exists"}
+            return jsonify({"data": "No such form exists"})
         spreadsheetId=result[0][0]
         ans_id_list = []
         ans_list = []
@@ -29,12 +31,14 @@ def add_ans():
             else:
                 query = f"INSERT INTO answer_text(q_id,ans_text,user_id) VALUES {qid,ans.get("ans_text"),data.get("user_id")}"
                 ans_list.append(ans.get("ans_text"))
-            ans_id_list.append(execute_query(query,True))
+            ans_id_list.append(db.execute_query(query,True))
+        db.commit_transaction()
+
         insert_answer(spreadsheetId,data.get("user_id"),ans_list)
         return jsonify({"data":ans_id_list})
     
     except pymysql.Error as e:
         print(e)
         error_message = f"Error executing query: {e}"
-        return {'data':error_message}
+        return jsonify({'data':error_message})
 

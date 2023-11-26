@@ -1,7 +1,7 @@
 from flask import Blueprint
 from flask import request, jsonify
 import pymysql
-from assets.db import execute_query
+from assets.db import DatabaseTransaction
 from assets.sheets import create_sheet
 
 form_bp = Blueprint("form", __name__)
@@ -14,14 +14,17 @@ def create_form():
             return jsonify({"data": "no questions added to form"})
         if "user_id" not in data.keys():
             return jsonify({"data": "user_id not added"})
+        
+        db = DatabaseTransaction()
+        db.start_transaction()
         query = f"SELECT * FROM user WHERE user_id = '{data.get('user_id')}'"
-        result = execute_query(query)
+        result = db.execute_query(query)
         if len(result) == 0:
             return jsonify({"data": "user not found"})
 
         first_qid = None
         query = f"INSERT INTO form(user_id) VALUES ({data.get('user_id')})"
-        form_id = execute_query(query, True)
+        form_id = db.execute_query(query, True)
 
         prev_qid = None
         qid_list = []
@@ -32,7 +35,7 @@ def create_form():
             else:
                 query = f"INSERT INTO question(form_id,ques_text,ques_type,prev_qid) VALUES {form_id,ques.get('ques_text'),ques.get('ques_type'),prev_qid}"
             print(query)
-            qid = execute_query(query, True)
+            qid = db.execute_query(query, True)
             qid_list.append(qid)
             q_text_list.append(ques.get('ques_text'))
             prev_qid = qid
@@ -41,21 +44,23 @@ def create_form():
             if ques.get("ques_type") == "MCQ":
                 for resp in ques.get("responses"):
                     query = f"INSERT INTO response(q_id,res_text) VALUES {qid,resp}"
-                    execute_query(query, True)
+                    db.execute_query(query, True)
         for i in range(len(qid_list)-1):
             query = f"UPDATE question SET next_qid={qid_list[i+1]} WHERE q_id={qid_list[i]}"
-            execute_query(query)
+            db.execute_query(query)
         query = f"UPDATE form SET first_qid = {first_qid} WHERE form_id = {form_id}"
-        execute_query(query)
+        db.execute_query(query)
         spreadsheetId = create_sheet(data.get('user_id'),qid_list,q_text_list)
         query = f"UPDATE form SET spreadsheetId = '{spreadsheetId}' WHERE form_id = {form_id}"
-        execute_query(query)
+        db.execute_query(query)
+        db.commit_transaction()
+
         return jsonify({"form_id": form_id,"qid_list":qid_list,"spreadsheet_id":spreadsheetId})
 
     except pymysql.Error as e:
         print(e)
         error_message = f"Error executing query: {e}"
-        return {"data": error_message}
+        return jsonify({"data": error_message})
 
 
 @form_bp.route("/display", methods=["POST"])
@@ -68,15 +73,18 @@ def display_form():
         if "form_id" not in data.keys():
             return jsonify({"data": "form_id not added"})
 
+        db = DatabaseTransaction()
+        db.start_transaction()
         form_id = data.get("form_id")
         user_id = data.get("user_id")
         query = f"SELECT first_qid FROM form WHERE form_id = {form_id} AND user_id = {user_id}"
-        result = execute_query(query)
+        result = db.execute_query(query)
         if len(result[0]) != 1:
-            return {"data": "No such form exists"}
+            return jsonify({"data": "No such form exists"})
 
         query = f"SELECT * FROM question WHERE form_id = {form_id}"
-        q_list = execute_query(query)
+        q_list = db.execute_query(query)
+        db.commit_transaction()
 
         mp = {}
         print(q_list)
@@ -87,7 +95,7 @@ def display_form():
         while cur != None:
             if mp[cur].get("type").upper() == "MCQ":
                 query = f"SELECT res_id,res_text FROM response WHERE q_id={cur}"
-                result = execute_query(query)
+                result = db.execute_query(query)
                 responses = []
                 for item in result:
                     responses.append({"resp_id":item[0],"resp_text":item[1]})
@@ -111,7 +119,7 @@ def display_form():
     except pymysql.Error as e:
         print(e)
         error_message = f"Error executing query: {e}"
-        return {"data": error_message}
+        return jsonify({"data": error_message})
 
 
 @form_bp.route("/delete", methods=["DELETE"])
@@ -124,27 +132,30 @@ def delete_form():
         if "form_id" not in data.keys():
             return jsonify({"data": "form_id not added"})
 
+        db = DatabaseTransaction()
+        db.start_transaction()
         form_id = data.get("form_id")
         user_id = data.get("user_id")
         query = f"SELECT COUNT(*) FROM form WHERE form_id = {form_id} AND user_id = {user_id}"
-        result = execute_query(query)
+        result = db.execute_query(query)
         if result[0][0] != 1:
-            return {"data": "unexpected Error"}
+            return jsonify({"data": "unexpected Error"})
 
         query = (
             f"SELECT q_id FROM question WHERE form_id = {form_id} AND ques_type = 'MCQ'"
         )
-        qid_list = execute_query(query)[0]
+        qid_list = db.execute_query(query)[0]
         for qid in qid_list:
             query = f"DELETE FROM response WHERE q_id = {qid}"
-            execute_query(query)
+            db.execute_query(query)
         query = f"DELETE FROM question WHERE form_id = {form_id}"
-        execute_query(query)
+        db.execute_query(query)
         query = f"DELETE FROM form WHERE form_id = {form_id}"
-        execute_query(query)
-        return {"data": "Form deleted"}
+        db.execute_query(query)
+        db.commit_transaction()
+        return jsonify({"data": "Form deleted"})
 
     except pymysql.Error as e:
         print(e)
         error_message = f"Error executing query: {e}"
-        return {"data": error_message}
+        return jsonify({"data": error_message})
